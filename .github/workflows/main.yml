@@ -22,100 +22,21 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
+
+      - name: Regenerate platform folders (android/ios) if missing/old
+        run: flutter create --platforms=android .
 
       - name: Create local.properties
-        run: echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
+        run: |
+          mkdir -p android
+          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
 
       - name: Get packages
         run: flutter pub get
 
-      - name: Copy default launcher icons from Flutter SDK template
-        run: |
-          TMPL="$FLUTTER_ROOT/packages/flutter_tools/templates/app_shared/android.tmpl/app/src/main/res"
-          RES="android/app/src/main/res"
-          for density in mipmap-hdpi mipmap-mdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
-            if [ -d "$TMPL/$density" ]; then
-              cp -r "$TMPL/$density" "$RES/"
-              echo "Copied $density"
-            else
-              echo "Missing in template: $density — searching Flutter SDK..."
-              find "$FLUTTER_ROOT" -name "ic_launcher.png" -path "*/$density/*" 2>/dev/null | head -1 | while read src; do
-                mkdir -p "$RES/$density"
-                cp "$src" "$RES/$density/ic_launcher.png"
-                echo "Copied from $src"
-              done
-            fi
-          done
-          ls "$RES/"
-      - name: Show project.dart v1 check (diagnostic)
-        run: |
-          PROJECT_DART="$FLUTTER_ROOT/packages/flutter_tools/lib/src/project.dart"
-          echo "=== Lines mentioning v1/throwToolExit ==="
-          grep -n "deleted Android v1\|throwToolExit\|checkForDeprecation" "$PROJECT_DART" | head -20
-          echo ""
-          echo "=== Context (lines 925-960) ==="
-          sed -n '925,960p' "$PROJECT_DART"
-      - name: Patch project.dart - bypass v1 embedding throwToolExit
-        run: |
-          python3 - << 'PYEOF'
-          import os, sys
-          path = os.environ['FLUTTER_ROOT'] + '/packages/flutter_tools/lib/src/project.dart'
-          lines = open(path).read().split('\n')
-          out = []
-          i = 0
-          patched = False
-          while i < len(lines):
-              line = lines[i]
-              # Detect throwToolExit that covers the v1 embedding message
-              if 'throwToolExit' in line:
-                  # Collect the full multi-line call
-                  call_lines = [line]
-                  depth = line.count('(') - line.count(')')
-                  j = i + 1
-                  while j < len(lines) and depth > 0:
-                      call_lines.append(lines[j])
-                      depth += lines[j].count('(') - lines[j].count(')')
-                      j += 1
-                  full_call = '\n'.join(call_lines)
-                  if 'deleted Android v1 embedding' in full_call:
-                      print(f"  Found v1 throwToolExit at line {i+1}, spanning to line {j}")
-                      out.append('    // v1 embedding check bypassed by CI patch')
-                      i = j  # skip all lines of the call
-                      patched = True
-                      continue
-              out.append(line)
-              i += 1
-          if patched:
-              open(path, 'w').write('\n'.join(out))
-              print("SUCCESS: project.dart patched correctly.")
-          else:
-              print("WARNING: throwToolExit with v1 message not found by multi-line scanner.")
-              # Fallback: line-by-line comment
-              lines2 = open(path).read().split('\n')
-              out2 = []
-              for ln in lines2:
-                  if 'deleted Android v1 embedding' in ln:
-                      out2.append('    // v1 check line bypassed: ' + ln.strip())
-                      patched = True
-                  else:
-                      out2.append(ln)
-              if patched:
-                  open(path, 'w').write('\n'.join(out2))
-                  print("Fallback line comment patch applied.")
-              else:
-                  print("ERROR: could not find v1 check anywhere in project.dart")
-                  sys.exit(1)
-          PYEOF
-      - name: Delete flutter_tools snapshot (force recompile)
-        run: |
-          rm -f "$FLUTTER_ROOT/bin/cache/flutter_tools.snapshot"
-          rm -f "$FLUTTER_ROOT/bin/cache/flutter_tools.stamp"
-          echo "Snapshot deleted — Flutter will recompile tools from patched source."
       - name: Build APK
         run: flutter build apk --release
-
-      - name: List APK output
-        run: find build/app/outputs -name "*.apk" 2>/dev/null || echo "No APK found"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
